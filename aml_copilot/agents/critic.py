@@ -4,6 +4,8 @@ from pydantic import BaseModel, Field
 from google.adk.agents import Agent
 from google.adk.models.lite_llm import LiteLlm
 
+from aml_copilot.tools.validation import validate_sar_draft
+
 
 class CriticFeedback(BaseModel):
     verdict: str = Field(description="PASS or FAIL")
@@ -26,51 +28,49 @@ You are an AML Compliance Reviewer. You validate SAR (Suspicious Activity Report
 drafts against FinCEN BSA filing requirements.
 
 ## Input
-The user message will contain a SAR draft with these sections:
-- subject_info
-- suspicious_activity
-- supporting_evidence
-- risk_assessment
-- recommended_action
+The user message will contain:
+- A SAR draft with fields: subject_info, suspicious_activity, supporting_evidence,
+  risk_assessment, recommended_action
+- The original triage result (risk_score, risk_level, flags)
+- The evidence bundle (sanctions_hits, prior_cases)
 
-Along with the original triage result and evidence bundle for cross-referencing.
-
-## Validation Checklist
-Review the SAR draft against these criteria:
-
-1. **Subject Identification**: Does subject_info clearly identify the accounts
-   involved, transaction type, and amount?
-
-2. **Activity Description**: Does suspicious_activity explain what triggered
-   the alert? Does it reference specific risk flags?
-
-3. **Evidence Citation**: Does supporting_evidence cite specific data from the
-   evidence bundle (sanctions list names, match scores, case IDs, dates)?
-   Flag any claims not supported by the evidence.
-
-4. **Risk Justification**: Does risk_assessment state the score and level?
-   Is the justification consistent with the flags and evidence?
-
-5. **Action Appropriateness**: Is the recommended_action appropriate for the
-   risk level? (CRITICAL=immediate filing, HIGH=filing with review,
-   MEDIUM=monitoring, LOW=no action)
-
-## Verdict Rules
-- **PASS**: All 5 sections present and substantive (not just placeholders),
-  no unsupported claims, action matches risk level
-- **FAIL**: Any section missing/empty, unsupported claims found, or
-  action inappropriate for risk level
+## Workflow
+1. Extract the SAR draft fields, triage result, and evidence data from the message.
+2. Call `validate_sar_draft` EXACTLY ONCE with ALL required parameters:
+   - sar_subject_info, sar_suspicious_activity, sar_supporting_evidence,
+     sar_risk_assessment, sar_recommended_action (from the SAR draft)
+   - triage_risk_score, triage_risk_level, triage_flags (from triage result)
+   - evidence_sanctions_hits, evidence_prior_cases (from evidence bundle)
+3. After receiving the tool result, produce your final response using the
+   returned verdict, completeness_score, missing_elements, unsupported_claims,
+   and revision_instructions. Do NOT call the tool again.
 
 ## Output Format
 Respond with ONLY valid JSON:
 {
-  "verdict": "PASS or FAIL",
-  "completeness_score": <0-100>,
-  "missing_elements": ["<list of missing items, empty if none>"],
-  "unsupported_claims": ["<list of unsupported claims, empty if none>"],
-  "revision_instructions": "<specific revision instructions, empty string if PASS>"
+  "verdict": "<verdict from tool>",
+  "completeness_score": <score from tool>,
+  "missing_elements": [<missing_elements from tool>],
+  "unsupported_claims": [<unsupported_claims from tool>],
+  "revision_instructions": "<revision_instructions from tool>"
 }
 """
+
+
+def _strip_tools_after_first_call(callback_context, llm_request):
+    """Toggle tools vs response_schema per LLM call."""
+    if callback_context.state.get("_validation_done"):
+        llm_request.config.tools = []
+        callback_context.state["_validation_done"] = False
+    else:
+        llm_request.config.response_schema = None
+        llm_request.config.response_mime_type = None
+    return None
+
+
+def _mark_tool_called(tool, args, tool_context, tool_response):
+    """Set state flag after validate_sar_draft executes."""
+    tool_context.state["_validation_done"] = True
 
 
 critic_agent = Agent(
@@ -78,6 +78,9 @@ critic_agent = Agent(
     name="critic_agent",
     description="Validates SAR drafts against FinCEN filing requirements.",
     instruction=CRITIC_PROMPT,
+    tools=[validate_sar_draft],
     output_schema=CriticFeedback,
     output_key="critic_feedback",
+    before_model_callback=_strip_tools_after_first_call,
+    after_tool_callback=_mark_tool_called,
 )

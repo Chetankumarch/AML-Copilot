@@ -12,8 +12,11 @@ class TestCriticAgentConfiguration:
     def test_agent_name(self):
         assert critic_agent.name == "critic_agent"
 
-    def test_no_tools(self):
-        assert len(critic_agent.tools) == 0
+    def test_agent_has_one_tool(self):
+        assert len(critic_agent.tools) == 1
+
+    def test_instruction_references_tool(self):
+        assert "validate_sar_draft" in critic_agent.instruction
 
     def test_output_key_is_set(self):
         assert critic_agent.output_key == "critic_feedback"
@@ -22,19 +25,16 @@ class TestCriticAgentConfiguration:
         assert critic_agent.output_schema == CriticFeedback
 
     def test_instruction_references_checklist(self):
-        assert "Subject Identification" in critic_agent.instruction
-        assert "Activity Description" in critic_agent.instruction
-        assert "Evidence Citation" in critic_agent.instruction
-        assert "Risk Justification" in critic_agent.instruction
-        assert "Action Appropriateness" in critic_agent.instruction
+        assert "triage_risk_score" in critic_agent.instruction
+        assert "triage_risk_level" in critic_agent.instruction
+        assert "evidence_sanctions_hits" in critic_agent.instruction
+        assert "evidence_prior_cases" in critic_agent.instruction
 
-    def test_instruction_references_verdicts(self):
-        assert "PASS" in critic_agent.instruction
-        assert "FAIL" in critic_agent.instruction
+    def test_before_model_callback_is_set(self):
+        assert critic_agent.before_model_callback is not None
 
-    def test_no_callbacks_needed(self):
-        assert critic_agent.before_model_callback is None
-        assert critic_agent.after_tool_callback is None
+    def test_after_tool_callback_is_set(self):
+        assert critic_agent.after_tool_callback is not None
 
 
 class TestCriticFeedbackSchema:
