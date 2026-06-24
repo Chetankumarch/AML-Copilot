@@ -1,4 +1,4 @@
-"""Batch runner — feeds PaySim transactions through the triage→evidence pipeline."""
+"""Batch runner — feeds PaySim transactions through the triage→evidence→narrative pipeline."""
 
 import asyncio
 import csv
@@ -10,6 +10,7 @@ from google.genai import types
 
 from aml_copilot.agents.triage import triage_agent
 from aml_copilot.agents.evidence import evidence_agent
+from aml_copilot.agents.narrative import narrative_agent
 
 PAYSIM_CSV = (
     "/Users/chetankumarch/.cache/kagglehub/datasets"
@@ -51,6 +52,7 @@ async def main():
 
     triage_runner = InMemoryRunner(agent=triage_agent, app_name="aml_triage")
     evidence_runner = InMemoryRunner(agent=evidence_agent, app_name="aml_evidence")
+    narrative_runner = InMemoryRunner(agent=narrative_agent, app_name="aml_narrative")
 
     with open(PAYSIM_CSV, newline="") as f:
         reader = csv.DictReader(f)
@@ -63,9 +65,6 @@ async def main():
 
             await triage_runner.session_service.create_session(
                 app_name="aml_triage", user_id="batch", session_id=session_id
-            )
-            await evidence_runner.session_service.create_session(
-                app_name="aml_evidence", user_id="batch", session_id=session_id
             )
 
             # Stage 1: Triage
@@ -87,22 +86,47 @@ async def main():
 
             # Stage 2: Evidence (only for MEDIUM+ risk)
             risk_score = triage_result.get("risk_score", 0)
-            if risk_score >= 26:
-                evidence_prompt = (
-                    f"Gather evidence for this transaction: {tx_text}\n"
-                    f"Triage result: {json.dumps(triage_result)}"
-                )
-                evidence_text = await run_agent(
-                    evidence_runner, "batch", session_id, evidence_prompt
-                )
-                try:
-                    evidence_result = json.loads(evidence_text)
-                    print("\nEVIDENCE:")
-                    print(json.dumps(evidence_result, indent=2))
-                except json.JSONDecodeError:
-                    print(f"\nEVIDENCE (raw): {evidence_text}")
-            else:
-                print(f"\nSkipping evidence gathering (risk_score={risk_score} < 26)")
+            if risk_score < 26:
+                print(f"\nSkipping evidence & narrative (risk_score={risk_score} < 26)")
+                continue
+
+            await evidence_runner.session_service.create_session(
+                app_name="aml_evidence", user_id="batch", session_id=session_id
+            )
+            evidence_prompt = (
+                f"Gather evidence for: nameOrig={row['nameOrig']}, "
+                f"nameDest={row['nameDest']}"
+            )
+            evidence_text = await run_agent(
+                evidence_runner, "batch", session_id, evidence_prompt
+            )
+            try:
+                evidence_result = json.loads(evidence_text)
+                print("\nEVIDENCE:")
+                print(json.dumps(evidence_result, indent=2))
+            except json.JSONDecodeError:
+                print(f"\nEVIDENCE (raw): {evidence_text}")
+                continue
+
+            # Stage 3: Narrative (SAR draft)
+            await narrative_runner.session_service.create_session(
+                app_name="aml_narrative", user_id="batch", session_id=session_id
+            )
+            narrative_prompt = (
+                f"Draft a SAR for this transaction:\n"
+                f"Transaction: {tx_text}\n"
+                f"Triage: {json.dumps(triage_result)}\n"
+                f"Evidence: {json.dumps(evidence_result)}"
+            )
+            narrative_text = await run_agent(
+                narrative_runner, "batch", session_id, narrative_prompt
+            )
+            try:
+                sar_draft = json.loads(narrative_text)
+                print("\nSAR DRAFT:")
+                print(json.dumps(sar_draft, indent=2))
+            except json.JSONDecodeError:
+                print(f"\nSAR DRAFT (raw): {narrative_text}")
 
     print(f"\n{'='*60}")
     print(f"Processed {min(limit, i+1)} transactions.")
