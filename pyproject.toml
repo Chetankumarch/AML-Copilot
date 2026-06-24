@@ -1,0 +1,16 @@
+[project]
+name = "aml-copilot"
+version = "0.1.0"
+description = "Multi-agent AML investigation co-pilot built on Google ADK"
+requires-python = ">=3.11"
+dependencies = [
+    "google-adk>=0.3.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
