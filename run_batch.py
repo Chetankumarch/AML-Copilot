@@ -1,4 +1,4 @@
-"""Batch runner — feeds PaySim transactions through the triage→evidence→narrative pipeline."""
+"""Batch runner — full triage→evidence→narrative→critic pipeline."""
 
 import asyncio
 import csv
@@ -11,6 +11,7 @@ from google.genai import types
 from aml_copilot.agents.triage import triage_agent
 from aml_copilot.agents.evidence import evidence_agent
 from aml_copilot.agents.narrative import narrative_agent
+from aml_copilot.agents.critic import critic_agent
 
 PAYSIM_CSV = (
     "/Users/chetankumarch/.cache/kagglehub/datasets"
@@ -53,6 +54,7 @@ async def main():
     triage_runner = InMemoryRunner(agent=triage_agent, app_name="aml_triage")
     evidence_runner = InMemoryRunner(agent=evidence_agent, app_name="aml_evidence")
     narrative_runner = InMemoryRunner(agent=narrative_agent, app_name="aml_narrative")
+    critic_runner = InMemoryRunner(agent=critic_agent, app_name="aml_critic")
 
     with open(PAYSIM_CSV, newline="") as f:
         reader = csv.DictReader(f)
@@ -87,7 +89,7 @@ async def main():
             # Stage 2: Evidence (only for MEDIUM+ risk)
             risk_score = triage_result.get("risk_score", 0)
             if risk_score < 26:
-                print(f"\nSkipping evidence & narrative (risk_score={risk_score} < 26)")
+                print(f"\nSkipping pipeline (risk_score={risk_score} < 26)")
                 continue
 
             await evidence_runner.session_service.create_session(
@@ -127,6 +129,27 @@ async def main():
                 print(json.dumps(sar_draft, indent=2))
             except json.JSONDecodeError:
                 print(f"\nSAR DRAFT (raw): {narrative_text}")
+                continue
+
+            # Stage 4: Critic (validation)
+            await critic_runner.session_service.create_session(
+                app_name="aml_critic", user_id="batch", session_id=session_id
+            )
+            critic_prompt = (
+                f"Validate this SAR draft:\n"
+                f"SAR Draft: {json.dumps(sar_draft)}\n"
+                f"Triage: {json.dumps(triage_result)}\n"
+                f"Evidence: {json.dumps(evidence_result)}"
+            )
+            critic_text = await run_agent(
+                critic_runner, "batch", session_id, critic_prompt
+            )
+            try:
+                feedback = json.loads(critic_text)
+                print("\nCRITIC FEEDBACK:")
+                print(json.dumps(feedback, indent=2))
+            except json.JSONDecodeError:
+                print(f"\nCRITIC FEEDBACK (raw): {critic_text}")
 
     print(f"\n{'='*60}")
     print(f"Processed {min(limit, i+1)} transactions.")
